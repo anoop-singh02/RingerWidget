@@ -1,0 +1,1049 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Create project files
+        run: |
+          set -e
+          mkdir -p project
+          cd project
+          mkdir -p 'app'
+          cat > 'app/build.gradle.kts' << 'FILE_EOF_MARKER'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "com.anoop.ringerwidget"
+              compileSdk = 35
+
+              defaultConfig {
+                  applicationId = "com.anoop.ringerwidget"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 2
+                  versionName = "2.0"
+              }
+
+              signingConfigs {
+                  getByName("debug") {
+                      storeFile = rootProject.file("ringer.keystore")
+                      storePassword = "ringer123"
+                      keyAlias = "ringer"
+                      keyPassword = "ringer123"
+                  }
+              }
+
+              buildTypes {
+                  debug {
+                      signingConfig = signingConfigs.getByName("debug")
+                  }
+                  release {
+                      isMinifyEnabled = false
+                      signingConfig = signingConfigs.getByName("debug")
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.appcompat:appcompat:1.7.0")
+              implementation("com.google.android.material:material:1.12.0")
+          }
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main'
+          cat > 'app/src/main/AndroidManifest.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+
+              <application
+                  android:name=".RingerApp"
+                  android:allowBackup="true"
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
+                  android:label="@string/app_name"
+                  android:theme="@style/Theme.RingerWidget"
+                  android:supportsRtl="true">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <receiver
+                      android:name=".RingerWidgetProvider"
+                      android:exported="true"
+                      android:label="@string/widget_name_square">
+                      <intent-filter>
+                          <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                          <action android:name="com.anoop.ringerwidget.TOGGLE" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.appwidget.provider"
+                          android:resource="@xml/ringer_widget_info" />
+                  </receiver>
+
+                  <receiver
+                      android:name=".RingerWidgetCircleProvider"
+                      android:exported="true"
+                      android:label="@string/widget_name_circle">
+                      <intent-filter>
+                          <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                          <action android:name="com.anoop.ringerwidget.TOGGLE" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.appwidget.provider"
+                          android:resource="@xml/ringer_widget_circle_info" />
+                  </receiver>
+
+                  <receiver
+                      android:name=".RingerWidgetPillProvider"
+                      android:exported="true"
+                      android:label="@string/widget_name_pill">
+                      <intent-filter>
+                          <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                          <action android:name="com.anoop.ringerwidget.TOGGLE" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.appwidget.provider"
+                          android:resource="@xml/ringer_widget_pill_info" />
+                  </receiver>
+
+              </application>
+          </manifest>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/java/com/anoop/ringerwidget'
+          cat > 'app/src/main/java/com/anoop/ringerwidget/MainActivity.kt' << 'FILE_EOF_MARKER'
+          package com.anoop.ringerwidget
+
+          import android.app.NotificationManager
+          import android.content.Intent
+          import android.media.AudioManager
+          import android.os.Bundle
+          import android.provider.Settings
+          import android.widget.Button
+          import android.widget.TextView
+          import androidx.appcompat.app.AppCompatActivity
+
+          class MainActivity : AppCompatActivity() {
+
+              private lateinit var statusText: TextView
+              private lateinit var toggleButton: Button
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContentView(R.layout.activity_main)
+                  statusText = findViewById(R.id.status_text)
+                  toggleButton = findViewById(R.id.toggle_button)
+
+                  toggleButton.setOnClickListener {
+                      val nm = getSystemService(NotificationManager::class.java)
+                      if (!nm.isNotificationPolicyAccessGranted) {
+                          startActivity(Intent(Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS))
+                      } else {
+                          WidgetCore.cycleMode(this)
+                          refresh()
+                          WidgetCore.updateAll(this)
+                      }
+                  }
+              }
+
+              override fun onResume() {
+                  super.onResume()
+                  refresh()
+                  WidgetCore.updateAll(this)
+              }
+
+              private fun refresh() {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  if (!nm.isNotificationPolicyAccessGranted) {
+                      statusText.text = getString(R.string.perm_needed)
+                      toggleButton.text = getString(R.string.btn_grant)
+                      return
+                  }
+                  val audio = getSystemService(AUDIO_SERVICE) as AudioManager
+                  statusText.text = when (audio.ringerMode) {
+                      AudioManager.RINGER_MODE_NORMAL -> getString(R.string.status_ring)
+                      AudioManager.RINGER_MODE_VIBRATE -> getString(R.string.status_vibrate)
+                      else -> getString(R.string.status_mute)
+                  }
+                  toggleButton.text = getString(R.string.btn_cycle)
+              }
+          }
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/java/com/anoop/ringerwidget'
+          cat > 'app/src/main/java/com/anoop/ringerwidget/RingerApp.kt' << 'FILE_EOF_MARKER'
+          package com.anoop.ringerwidget
+
+          import android.app.Application
+          import android.content.BroadcastReceiver
+          import android.content.Context
+          import android.content.Intent
+          import android.content.IntentFilter
+          import android.media.AudioManager
+          import androidx.core.content.ContextCompat
+
+          class RingerApp : Application() {
+
+              private val syncReceiver = object : BroadcastReceiver() {
+                  override fun onReceive(context: Context, intent: Intent) {
+                      WidgetCore.updateAll(context)
+                  }
+              }
+
+              override fun onCreate() {
+                  super.onCreate()
+                  val filter = IntentFilter().apply {
+                      addAction(AudioManager.RINGER_MODE_CHANGED_ACTION)
+                      addAction(Intent.ACTION_SCREEN_ON)
+                      addAction(Intent.ACTION_USER_PRESENT)
+                  }
+                  ContextCompat.registerReceiver(this, syncReceiver, filter, ContextCompat.RECEIVER_EXPORTED)
+                  WidgetCore.updateAll(this)
+              }
+          }
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/java/com/anoop/ringerwidget'
+          cat > 'app/src/main/java/com/anoop/ringerwidget/RingerCore.kt' << 'FILE_EOF_MARKER'
+          package com.anoop.ringerwidget
+
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.appwidget.AppWidgetManager
+          import android.content.ComponentName
+          import android.content.Context
+          import android.content.Intent
+          import android.media.AudioManager
+          import android.os.Build
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.os.VibratorManager
+          import android.widget.RemoteViews
+
+          /**
+           * Shared logic for all widget styles.
+           *
+           * MUTE strategy: instead of setRingerMode(SILENT) — which Android force-couples
+           * to Do Not Disturb for third-party apps — we mute the RING and NOTIFICATION
+           * streams directly. This is the same path the system volume panel takes, so
+           * DND stays untouched: true Pixel-style Mute.
+           */
+          object RingerCore {
+
+              const val ACTION_TOGGLE = "com.anoop.ringerwidget.TOGGLE"
+
+              enum class Mode { RING, VIBRATE, MUTE }
+
+              fun currentMode(context: Context): Mode {
+                  val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                  return when {
+                      audio.ringerMode == AudioManager.RINGER_MODE_VIBRATE -> Mode.VIBRATE
+                      audio.ringerMode == AudioManager.RINGER_MODE_SILENT -> Mode.MUTE
+                      audio.isStreamMute(AudioManager.STREAM_RING) -> Mode.MUTE
+                      else -> Mode.RING
+                  }
+              }
+
+              fun cycleMode(context: Context) {
+                  val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                  val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  if (!nm.isNotificationPolicyAccessGranted) return
+
+                  when (currentMode(context)) {
+                      Mode.RING -> {
+                          audio.ringerMode = AudioManager.RINGER_MODE_VIBRATE
+                          hapticTap(context)
+                      }
+                      Mode.VIBRATE -> {
+                          // Pixel-style MUTE: mute ring stream directly. No DND.
+                          try {
+                              audio.adjustStreamVolume(AudioManager.STREAM_RING, AudioManager.ADJUST_MUTE, 0)
+                          } catch (_: Exception) {}
+                          try {
+                              audio.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, AudioManager.ADJUST_MUTE, 0)
+                          } catch (_: Exception) {}
+                          // Safety: if the system engaged DND anyway, shut it off
+                          if (nm.currentInterruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL) {
+                              nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+                          }
+                      }
+                      Mode.MUTE -> {
+                          if (nm.currentInterruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL) {
+                              nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+                          }
+                          try {
+                              audio.adjustStreamVolume(AudioManager.STREAM_RING, AudioManager.ADJUST_UNMUTE, 0)
+                          } catch (_: Exception) {}
+                          try {
+                              audio.adjustStreamVolume(AudioManager.STREAM_NOTIFICATION, AudioManager.ADJUST_UNMUTE, 0)
+                          } catch (_: Exception) {}
+                          audio.ringerMode = AudioManager.RINGER_MODE_NORMAL
+                      }
+                  }
+              }
+
+              fun updateAllWidgets(context: Context) {
+                  updateProvider(context, WidgetSquare::class.java, R.layout.widget_square,
+                      R.drawable.bg_ring, R.drawable.bg_vibrate, R.drawable.bg_silent)
+                  updateProvider(context, WidgetPill::class.java, R.layout.widget_pill,
+                      R.drawable.bg_ring_pill, R.drawable.bg_vibrate_pill, R.drawable.bg_silent_pill)
+                  updateProvider(context, WidgetCircle::class.java, R.layout.widget_circle,
+                      R.drawable.bg_ring_circle, R.drawable.bg_vibrate_circle, R.drawable.bg_silent_circle)
+              }
+
+              private fun updateProvider(
+                  context: Context, cls: Class<*>, layoutId: Int,
+                  bgRing: Int, bgVibrate: Int, bgMute: Int
+              ) {
+                  val manager = AppWidgetManager.getInstance(context)
+                  val ids = manager.getAppWidgetIds(ComponentName(context, cls))
+                  if (ids.isEmpty()) return
+                  val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
+                  for (id in ids) {
+                      val views = RemoteViews(context.packageName, layoutId)
+                      when (currentMode(context)) {
+                          Mode.RING -> {
+                              views.setInt(R.id.widget_card, "setBackgroundResource", bgRing)
+                              views.setImageViewResource(R.id.widget_icon, R.drawable.ic_bell)
+                              views.setContentDescription(R.id.widget_card, context.getString(R.string.mode_ring))
+                          }
+                          Mode.VIBRATE -> {
+                              views.setInt(R.id.widget_card, "setBackgroundResource", bgVibrate)
+                              views.setImageViewResource(R.id.widget_icon, R.drawable.ic_vibrate)
+                              views.setContentDescription(R.id.widget_card, context.getString(R.string.mode_vibrate))
+                          }
+                          Mode.MUTE -> {
+                              views.setInt(R.id.widget_card, "setBackgroundResource", bgMute)
+                              views.setImageViewResource(R.id.widget_icon, R.drawable.ic_bell_off)
+                              views.setContentDescription(R.id.widget_card, context.getString(R.string.mode_mute))
+                          }
+                      }
+
+                      val pending: PendingIntent = if (nm.isNotificationPolicyAccessGranted) {
+                          val intent = Intent(context, cls).apply { action = ACTION_TOGGLE }
+                          PendingIntent.getBroadcast(context, 0, intent,
+                              PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                      } else {
+                          PendingIntent.getActivity(context, 1, Intent(context, MainActivity::class.java),
+                              PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                      }
+                      views.setOnClickPendingIntent(R.id.widget_card, pending)
+                      manager.updateAppWidget(id, views)
+                  }
+              }
+
+              fun hapticTap(context: Context) {
+                  val vibrator: Vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                      vm.defaultVibrator
+                  } else {
+                      @Suppress("DEPRECATION")
+                      context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                  }
+                  vibrator.vibrate(VibrationEffect.createOneShot(60, VibrationEffect.DEFAULT_AMPLITUDE))
+              }
+          }
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/java/com/anoop/ringerwidget'
+          cat > 'app/src/main/java/com/anoop/ringerwidget/RingerWidgetProvider.kt' << 'FILE_EOF_MARKER'
+          package com.anoop.ringerwidget
+
+          import android.appwidget.AppWidgetManager
+          import android.appwidget.AppWidgetProvider
+          import android.content.Context
+          import android.content.Intent
+          import android.media.AudioManager
+
+          abstract class BaseRingerWidget : AppWidgetProvider() {
+
+              override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
+                  val style = WidgetCore.STYLES[this::class.java] ?: return
+                  for (id in ids) WidgetCore.update(context, manager, id, this::class.java, style)
+              }
+
+              override fun onReceive(context: Context, intent: Intent) {
+                  super.onReceive(context, intent)
+                  when (intent.action) {
+                      WidgetCore.ACTION_TOGGLE -> {
+                          WidgetCore.cycleMode(context)
+                          WidgetCore.updateAll(context)
+                      }
+                      AudioManager.RINGER_MODE_CHANGED_ACTION,
+                      Intent.ACTION_SCREEN_ON,
+                      Intent.ACTION_USER_PRESENT -> WidgetCore.updateAll(context)
+                  }
+              }
+          }
+
+          class RingerWidgetProvider : BaseRingerWidget()
+          class RingerWidgetCircleProvider : BaseRingerWidget()
+          class RingerWidgetPillProvider : BaseRingerWidget()
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/java/com/anoop/ringerwidget'
+          cat > 'app/src/main/java/com/anoop/ringerwidget/WidgetCore.kt' << 'FILE_EOF_MARKER'
+          package com.anoop.ringerwidget
+
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.appwidget.AppWidgetManager
+          import android.content.ComponentName
+          import android.content.Context
+          import android.content.Intent
+          import android.media.AudioManager
+          import android.os.Build
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.os.VibratorManager
+          import android.widget.RemoteViews
+
+          /** Shared logic for all widget styles. */
+          object WidgetCore {
+
+              const val ACTION_TOGGLE = "com.anoop.ringerwidget.TOGGLE"
+
+              data class Style(
+                  val layout: Int,
+                  val bgRing: Int,
+                  val bgVibrate: Int,
+                  val bgSilent: Int
+              )
+
+              val STYLES: Map<Class<*>, Style> = mapOf(
+                  RingerWidgetProvider::class.java to Style(
+                      R.layout.widget_ringer, R.drawable.bg_ring, R.drawable.bg_vibrate, R.drawable.bg_silent
+                  ),
+                  RingerWidgetCircleProvider::class.java to Style(
+                      R.layout.widget_circle, R.drawable.bg_ring_oval, R.drawable.bg_vibrate_oval, R.drawable.bg_silent_oval
+                  ),
+                  RingerWidgetPillProvider::class.java to Style(
+                      R.layout.widget_pill, R.drawable.bg_ring_pill, R.drawable.bg_vibrate_pill, R.drawable.bg_silent_pill
+                  )
+              )
+
+              fun updateAll(context: Context) {
+                  val manager = AppWidgetManager.getInstance(context)
+                  for ((cls, style) in STYLES) {
+                      val ids = manager.getAppWidgetIds(ComponentName(context, cls))
+                      for (id in ids) update(context, manager, id, cls, style)
+                  }
+              }
+
+              fun update(context: Context, manager: AppWidgetManager, widgetId: Int, cls: Class<*>, style: Style) {
+                  val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                  val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  val views = RemoteViews(context.packageName, style.layout)
+
+                  when (audio.ringerMode) {
+                      AudioManager.RINGER_MODE_NORMAL -> {
+                          views.setInt(R.id.widget_card, "setBackgroundResource", style.bgRing)
+                          views.setImageViewResource(R.id.widget_icon, R.drawable.ic_bell)
+                          views.setContentDescription(R.id.widget_card, context.getString(R.string.mode_ring))
+                      }
+                      AudioManager.RINGER_MODE_VIBRATE -> {
+                          views.setInt(R.id.widget_card, "setBackgroundResource", style.bgVibrate)
+                          views.setImageViewResource(R.id.widget_icon, R.drawable.ic_vibrate)
+                          views.setContentDescription(R.id.widget_card, context.getString(R.string.mode_vibrate))
+                      }
+                      else -> {
+                          views.setInt(R.id.widget_card, "setBackgroundResource", style.bgSilent)
+                          views.setImageViewResource(R.id.widget_icon, R.drawable.ic_bell_off)
+                          views.setContentDescription(R.id.widget_card, context.getString(R.string.mode_mute))
+                      }
+                  }
+
+                  val pending: PendingIntent = if (nm.isNotificationPolicyAccessGranted) {
+                      @Suppress("UNCHECKED_CAST")
+                      val intent = Intent(context, cls as Class<Any>).apply { action = ACTION_TOGGLE }
+                      PendingIntent.getBroadcast(
+                          context, cls.hashCode(), intent,
+                          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                      )
+                  } else {
+                      PendingIntent.getActivity(
+                          context, 1, Intent(context, MainActivity::class.java),
+                          PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                      )
+                  }
+                  views.setOnClickPendingIntent(R.id.widget_card, pending)
+                  manager.updateAppWidget(widgetId, views)
+              }
+
+              /**
+               * Ring -> Vibrate -> Mute -> Ring.
+               * MUTE uses the same internal path as the volume keys (stream mute),
+               * which silences the phone WITHOUT triggering Do Not Disturb.
+               */
+              fun cycleMode(context: Context) {
+                  val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                  val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                  if (!nm.isNotificationPolicyAccessGranted) return
+
+                  when (audio.ringerMode) {
+                      AudioManager.RINGER_MODE_NORMAL -> {
+                          audio.ringerMode = AudioManager.RINGER_MODE_VIBRATE
+                          hapticTap(context)
+                      }
+                      AudioManager.RINGER_MODE_VIBRATE -> {
+                          // Volume-key style mute: mute the ring stream directly. No DND.
+                          audio.adjustStreamVolume(AudioManager.STREAM_RING, AudioManager.ADJUST_MUTE, 0)
+                          // Safety: if the system coupled DND anyway, immediately clear it
+                          if (nm.currentInterruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL) {
+                              nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+                          }
+                      }
+                      else -> {
+                          // Make sure DND is off, unmute ring stream, back to Ring
+                          if (nm.currentInterruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL) {
+                              nm.setInterruptionFilter(NotificationManager.INTERRUPTION_FILTER_ALL)
+                          }
+                          audio.adjustStreamVolume(AudioManager.STREAM_RING, AudioManager.ADJUST_UNMUTE, 0)
+                          audio.ringerMode = AudioManager.RINGER_MODE_NORMAL
+                      }
+                  }
+              }
+
+              private fun hapticTap(context: Context) {
+                  val vibrator: Vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                      val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                      vm.defaultVibrator
+                  } else {
+                      @Suppress("DEPRECATION")
+                      context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                  }
+                  vibrator.vibrate(VibrationEffect.createOneShot(60, VibrationEffect.DEFAULT_AMPLITUDE))
+              }
+          }
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/java/com/anoop/ringerwidget'
+          cat > 'app/src/main/java/com/anoop/ringerwidget/Widgets.kt' << 'FILE_EOF_MARKER'
+          package com.anoop.ringerwidget
+
+          import android.appwidget.AppWidgetManager
+          import android.appwidget.AppWidgetProvider
+          import android.content.Context
+          import android.content.Intent
+          import android.media.AudioManager
+
+          abstract class BaseRingerWidget : AppWidgetProvider() {
+              override fun onUpdate(context: Context, manager: AppWidgetManager, ids: IntArray) {
+                  RingerCore.updateAllWidgets(context)
+              }
+
+              override fun onReceive(context: Context, intent: Intent) {
+                  super.onReceive(context, intent)
+                  when (intent.action) {
+                      RingerCore.ACTION_TOGGLE -> {
+                          RingerCore.cycleMode(context)
+                          RingerCore.updateAllWidgets(context)
+                      }
+                      AudioManager.RINGER_MODE_CHANGED_ACTION,
+                      Intent.ACTION_SCREEN_ON,
+                      Intent.ACTION_USER_PRESENT,
+                      "android.media.STREAM_MUTE_CHANGED_ACTION" -> {
+                          RingerCore.updateAllWidgets(context)
+                      }
+                  }
+              }
+          }
+
+          class WidgetSquare : BaseRingerWidget()
+          class WidgetPill : BaseRingerWidget()
+          class WidgetCircle : BaseRingerWidget()
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_ring.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="rectangle">
+                      <gradient android:angle="135" android:startColor="#4C8DF5" android:endColor="#1A56C4" />
+                      <corners android:radius="32dp" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_ring_circle.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="oval">
+                      <gradient android:angle="135" android:startColor="#4C8DF5" android:endColor="#1A56C4" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_ring_oval.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android"
+              android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="oval">
+                      <gradient android:angle="135" android:startColor="#4C8DF5" android:endColor="#1A56C4" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_ring_pill.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android"
+              android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="rectangle">
+                      <gradient android:angle="135" android:startColor="#4C8DF5" android:endColor="#1A56C4" />
+                      <corners android:radius="100dp" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_silent.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="rectangle">
+                      <gradient android:angle="135" android:startColor="#5B6770" android:endColor="#2B333A" />
+                      <corners android:radius="32dp" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_silent_circle.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="oval">
+                      <gradient android:angle="135" android:startColor="#5B6770" android:endColor="#2B333A" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_silent_oval.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android"
+              android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="oval">
+                      <gradient android:angle="135" android:startColor="#5B6770" android:endColor="#2B333A" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_silent_pill.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android"
+              android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="rectangle">
+                      <gradient android:angle="135" android:startColor="#5B6770" android:endColor="#2B333A" />
+                      <corners android:radius="100dp" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_vibrate.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="rectangle">
+                      <gradient android:angle="135" android:startColor="#FFA940" android:endColor="#E5710A" />
+                      <corners android:radius="32dp" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_vibrate_circle.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android" android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="oval">
+                      <gradient android:angle="135" android:startColor="#FFA940" android:endColor="#E5710A" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_vibrate_oval.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android"
+              android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="oval">
+                      <gradient android:angle="135" android:startColor="#FFA940" android:endColor="#E5710A" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/bg_vibrate_pill.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <ripple xmlns:android="http://schemas.android.com/apk/res/android"
+              android:color="#4DFFFFFF">
+              <item>
+                  <shape android:shape="rectangle">
+                      <gradient android:angle="135" android:startColor="#FFA940" android:endColor="#E5710A" />
+                      <corners android:radius="100dp" />
+                  </shape>
+              </item>
+          </ripple>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/ic_bell.xml' << 'FILE_EOF_MARKER'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24"
+              android:tint="#FFFFFF">
+              <path android:fillColor="#FFFFFF"
+                  android:pathData="M12,22c1.1,0 2,-0.9 2,-2h-4c0,1.1 0.9,2 2,2zM18,16v-5c0,-3.07 -1.63,-5.64 -4.5,-6.32L13.5,4c0,-0.83 -0.67,-1.5 -1.5,-1.5s-1.5,0.67 -1.5,1.5v0.68C7.64,5.36 6,7.92 6,11v5l-2,2v1h16v-1l-2,-2z"/>
+          </vector>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/ic_bell_off.xml' << 'FILE_EOF_MARKER'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24"
+              android:tint="#FFFFFF">
+              <path android:fillColor="#FFFFFF"
+                  android:pathData="M20,18.69L7.84,6.14 5.27,3.49 4,4.76l2.8,2.8v0.01c-0.52,0.99 -0.8,2.16 -0.8,3.42v5l-2,2v1h13.73l2,2L21,19.72l-1,-1.03zM12,22c1.11,0 2,-0.89 2,-2h-4c0,1.11 0.89,2 2,2zM18,14.68L18,11c0,-3.08 -1.64,-5.64 -4.5,-6.32L13.5,4c0,-0.83 -0.67,-1.5 -1.5,-1.5s-1.5,0.67 -1.5,1.5v0.68c-0.24,0.06 -0.47,0.15 -0.69,0.23L18,14.68z"/>
+          </vector>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/ic_launcher_bg.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <shape xmlns:android="http://schemas.android.com/apk/res/android"
+              android:shape="rectangle">
+              <solid android:color="#1A56C4" />
+          </shape>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/ic_launcher_fg.xml' << 'FILE_EOF_MARKER'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+              <group android:scaleX="1.9" android:scaleY="1.9" android:translateX="31.2" android:translateY="31.2">
+                  <path android:fillColor="#FFFFFF"
+                      android:pathData="M12,22c1.1,0 2,-0.9 2,-2h-4c0,1.1 0.9,2 2,2zM18,16v-5c0,-3.07 -1.63,-5.64 -4.5,-6.32L13.5,4c0,-0.83 -0.67,-1.5 -1.5,-1.5s-1.5,0.67 -1.5,1.5v0.68C7.64,5.36 6,7.92 6,11v5l-2,2v1h16v-1l-2,-2z"/>
+              </group>
+          </vector>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/drawable'
+          cat > 'app/src/main/res/drawable/ic_vibrate.xml' << 'FILE_EOF_MARKER'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="24dp" android:height="24dp"
+              android:viewportWidth="24" android:viewportHeight="24"
+              android:tint="#FFFFFF">
+              <path android:fillColor="#FFFFFF"
+                  android:pathData="M0,15h2L2,9L0,9v6zM3,17h2L5,7L3,7v10zM22,9v6h2L24,9h-2zM19,17h2L21,7h-2v10zM16.5,3h-9C6.67,3 6,3.67 6,4.5v15c0,0.83 0.67,1.5 1.5,1.5h9c0.83,0 1.5,-0.67 1.5,-1.5v-15c0,-0.83 -0.67,-1.5 -1.5,-1.5zM16,19L8,19L8,5h8v14z"/>
+          </vector>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/layout'
+          cat > 'app/src/main/res/layout/activity_main.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="vertical"
+              android:gravity="center"
+              android:padding="32dp"
+              android:background="#0F1115">
+              <TextView
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="@string/app_name"
+                  android:textColor="#FFFFFF"
+                  android:textSize="26sp"
+                  android:textStyle="bold" />
+              <TextView
+                  android:id="@+id/status_text"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="24dp"
+                  android:textColor="#9AA3AF"
+                  android:textSize="16sp"
+                  android:gravity="center" />
+              <Button
+                  android:id="@+id/toggle_button"
+                  android:layout_width="match_parent"
+                  android:layout_height="64dp"
+                  android:layout_marginTop="32dp"
+                  android:textSize="18sp"
+                  android:textStyle="bold" />
+          </LinearLayout>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/layout'
+          cat > 'app/src/main/res/layout/widget_circle.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent">
+              <FrameLayout
+                  android:id="@+id/widget_card"
+                  android:layout_width="64dp"
+                  android:layout_height="64dp"
+                  android:layout_gravity="center"
+                  android:background="@drawable/bg_ring_oval">
+                  <ImageView
+                      android:id="@+id/widget_icon"
+                      android:layout_width="32dp"
+                      android:layout_height="32dp"
+                      android:layout_gravity="center"
+                      android:src="@drawable/ic_bell"
+                      android:contentDescription="@string/widget_label" />
+              </FrameLayout>
+          </FrameLayout>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/layout'
+          cat > 'app/src/main/res/layout/widget_pill.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/widget_card"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="@drawable/bg_ring_pill">
+              <ImageView
+                  android:id="@+id/widget_icon"
+                  android:layout_width="36dp"
+                  android:layout_height="36dp"
+                  android:layout_gravity="center"
+                  android:src="@drawable/ic_bell"
+                  android:contentDescription="@string/widget_label" />
+          </FrameLayout>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/layout'
+          cat > 'app/src/main/res/layout/widget_square.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/widget_card"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="@drawable/bg_ring">
+              <ImageView
+                  android:id="@+id/widget_icon"
+                  android:layout_width="44dp"
+                  android:layout_height="44dp"
+                  android:layout_gravity="center"
+                  android:src="@drawable/ic_bell"
+                  android:contentDescription="@string/widget_label" />
+          </FrameLayout>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/mipmap-anydpi-v26'
+          cat > 'app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_launcher_bg"/>
+              <foreground android:drawable="@drawable/ic_launcher_fg"/>
+              <monochrome android:drawable="@drawable/ic_launcher_fg"/>
+          </adaptive-icon>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/mipmap-anydpi-v26'
+          cat > 'app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@drawable/ic_launcher_bg"/>
+              <foreground android:drawable="@drawable/ic_launcher_fg"/>
+              <monochrome android:drawable="@drawable/ic_launcher_fg"/>
+          </adaptive-icon>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/values'
+          cat > 'app/src/main/res/values/colors.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_bg">#1A56C4</color>
+          </resources>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/values'
+          cat > 'app/src/main/res/values/strings.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">Ringer Toggle</string>
+              <string name="widget_label">Ringer</string>
+              <string name="widget_desc">Square — one tap: Ring, Vibrate, Mute</string>
+              <string name="widget_desc_circle">Circle — one tap: Ring, Vibrate, Mute</string>
+              <string name="widget_desc_pill">Pill — one tap: Ring, Vibrate, Mute</string>
+              <string name="widget_name_square">Ringer (Square)</string>
+              <string name="widget_name_circle">Ringer (Circle)</string>
+              <string name="widget_name_pill">Ringer (Pill)</string>
+              <string name="mode_ring">Ring</string>
+              <string name="mode_vibrate">Vibrate</string>
+              <string name="mode_mute">Mute</string>
+              <string name="status_ring">Ring</string>
+              <string name="status_vibrate">Vibrate</string>
+              <string name="status_mute">Mute</string>
+              <string name="btn_cycle">Cycle mode</string>
+              <string name="perm_needed">One-time setup: allow Do Not Disturb access so the widget can switch modes. It never turns DND on.</string>
+              <string name="btn_grant">Grant access</string>
+          </resources>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/values'
+          cat > 'app/src/main/res/values/themes.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <style name="Theme.RingerWidget" parent="Theme.Material3.DayNight.NoActionBar" />
+          </resources>
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/xml'
+          cat > 'app/src/main/res/xml/ringer_widget_circle_info.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="57dp"
+              android:minHeight="57dp"
+              android:targetCellWidth="1"
+              android:targetCellHeight="1"
+              android:maxResizeWidth="120dp"
+              android:maxResizeHeight="120dp"
+              android:updatePeriodMillis="1800000"
+              android:initialLayout="@layout/widget_circle"
+              android:resizeMode="none"
+              android:widgetCategory="home_screen"
+              android:previewLayout="@layout/widget_circle"
+              android:description="@string/widget_desc_circle" />
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/xml'
+          cat > 'app/src/main/res/xml/ringer_widget_pill_info.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="130dp"
+              android:minHeight="57dp"
+              android:targetCellWidth="2"
+              android:targetCellHeight="1"
+              android:maxResizeWidth="320dp"
+              android:maxResizeHeight="120dp"
+              android:updatePeriodMillis="1800000"
+              android:initialLayout="@layout/widget_pill"
+              android:resizeMode="horizontal"
+              android:widgetCategory="home_screen"
+              android:previewLayout="@layout/widget_pill"
+              android:description="@string/widget_desc_pill" />
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/xml'
+          cat > 'app/src/main/res/xml/widget_circle_info.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="57dp" android:minHeight="57dp"
+              android:targetCellWidth="1" android:targetCellHeight="1"
+              android:maxResizeWidth="140dp" android:maxResizeHeight="140dp"
+              android:updatePeriodMillis="1800000"
+              android:initialLayout="@layout/widget_circle"
+              android:resizeMode="horizontal|vertical"
+              android:widgetCategory="home_screen"
+              android:previewLayout="@layout/widget_circle"
+              android:description="@string/widget_desc_circle" />
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/xml'
+          cat > 'app/src/main/res/xml/widget_pill_info.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="130dp" android:minHeight="57dp"
+              android:targetCellWidth="2" android:targetCellHeight="1"
+              android:maxResizeWidth="320dp" android:maxResizeHeight="120dp"
+              android:updatePeriodMillis="1800000"
+              android:initialLayout="@layout/widget_pill"
+              android:resizeMode="horizontal|vertical"
+              android:widgetCategory="home_screen"
+              android:previewLayout="@layout/widget_pill"
+              android:description="@string/widget_desc_pill" />
+          FILE_EOF_MARKER
+          mkdir -p 'app/src/main/res/xml'
+          cat > 'app/src/main/res/xml/widget_square_info.xml' << 'FILE_EOF_MARKER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+              android:minWidth="57dp" android:minHeight="57dp"
+              android:targetCellWidth="1" android:targetCellHeight="1"
+              android:maxResizeWidth="180dp" android:maxResizeHeight="180dp"
+              android:updatePeriodMillis="1800000"
+              android:initialLayout="@layout/widget_square"
+              android:resizeMode="horizontal|vertical"
+              android:widgetCategory="home_screen"
+              android:previewLayout="@layout/widget_square"
+              android:description="@string/widget_desc_square" />
+          FILE_EOF_MARKER
+          cat > 'build.gradle.kts' << 'FILE_EOF_MARKER'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          FILE_EOF_MARKER
+          cat > 'gradle.properties' << 'FILE_EOF_MARKER'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          FILE_EOF_MARKER
+          cat > 'settings.gradle.kts' << 'FILE_EOF_MARKER'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "RingerWidget"
+          include(":app")
+          FILE_EOF_MARKER
+
+      - name: Create signing keystore
+        run: |
+          echo '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' | base64 -d > project/ringer.keystore
+          ls -la project/ringer.keystore
+
+      - name: Download Gradle 8.7
+        run: |
+          wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          unzip -q gradle-8.7-bin.zip
+
+      - name: Build debug APK
+        working-directory: project
+        run: |
+          ../gradle-8.7/bin/gradle assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RingerToggle-APK
+          path: project/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
